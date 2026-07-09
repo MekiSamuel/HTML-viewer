@@ -380,6 +380,12 @@
         return { kind: 'image', name, blobUrl: URL.createObjectURL(await res.blob()) };
       }
 
+      if (mimeType === 'text/html') {
+        const res = await driveFetch(`${base}?alt=media&supportsAllDrives=true`, accessToken);
+        const blob = new Blob([await res.text()], { type: 'text/html' });
+        return { kind: 'page', name, blobUrl: URL.createObjectURL(blob) };
+      }
+
       if (mimeType.startsWith('text/')) {
         const res = await driveFetch(`${base}?alt=media&supportsAllDrives=true`, accessToken);
         return { kind: 'text', name, text: await res.text() };
@@ -413,6 +419,16 @@
         setTitle(parsed.title?.trim() || doc.name);
         const styles = [...parsed.querySelectorAll('style')].map((s) => s.outerHTML).join('');
         ui.doc.innerHTML = styles + parsed.body.innerHTML;
+      } else if (doc.kind === 'page') {
+        setTitle(doc.name);
+        const frame = document.createElement('iframe');
+        frame.src = doc.blobUrl;
+        // Sandbox: allow the page's own scripts/styles to run, but keep it
+        // isolated from this app's origin and access token.
+        frame.sandbox = 'allow-scripts allow-popups allow-forms';
+        frame.style.cssText = 'width:100%;height:80vh;border:none;background:#fff;';
+        frame.title = doc.name;
+        ui.doc.appendChild(frame);
       } else if (doc.kind === 'pdf') {
         setTitle(doc.name);
         const frame = document.createElement('iframe');

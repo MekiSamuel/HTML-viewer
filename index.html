@@ -315,17 +315,7 @@
 
     // ---- 3. Data fetching ------------------------------------------------
 
-    /**
-     * Export the Google Doc as HTML via the Drive v3 API.
-     * @param {string} fileId
-     * @param {string} accessToken
-     * @returns {Promise<string>} the document HTML
-     */
-    async function fetchDocument(fileId, accessToken) {
-      setUIState('loading');
-
-      const url = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}/export?mimeType=${encodeURIComponent('text/html')}`;
-
+    async function driveFetch(url, accessToken) {
       const response = await fetch(url, {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
@@ -341,29 +331,108 @@
         );
       }
 
-      return response.text();
+      return response;
+    }
+
+    /**
+     * Fetch file metadata, then the displayable content.
+     * Native Google Docs are exported as HTML; PDFs, images and plain text
+     * are downloaded directly. Anything else gets a clear error.
+     * @returns {Promise<{kind: string, name: string, html?: string, blobUrl?: string, text?: string}>}
+     */
+    async function fetchDocument(fileId, accessToken) {
+      setUIState('loading');
+
+      const base = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}`;
+
+      const meta = await (await driveFetch(
+        `${base}?fields=${encodeURIComponent('name,mimeType')}&supportsAllDrives=true`,
+        accessToken
+      )).json();
+
+      const { name, mimeType } = meta;
+
+      // Native Google Doc → export as HTML
+      if (mimeType === 'application/vnd.google-apps.document') {
+        const res = await driveFetch(`${base}/export?mimeType=${encodeURIComponent('text/html')}`, accessToken);
+        return { kind: 'html', name, html: await res.text() };
+      }
+
+      // Other native Google editors files that export to HTML-friendly formats
+      if (mimeType === 'application/vnd.google-apps.spreadsheet' ||
+          mimeType === 'application/vnd.google-apps.presentation') {
+        const exportType = mimeType.endsWith('spreadsheet') ? 'text/html' : 'application/pdf';
+        const res = await driveFetch(`${base}/export?mimeType=${encodeURIComponent(exportType)}`, accessToken);
+        if (exportType === 'text/html') {
+          return { kind: 'html', name, html: await res.text() };
+        }
+        return { kind: 'pdf', name, blobUrl: URL.createObjectURL(await res.blob()) };
+      }
+
+      // Uploaded (binary) files → download directly with alt=media
+      if (mimeType === 'application/pdf') {
+        const res = await driveFetch(`${base}?alt=media&supportsAllDrives=true`, accessToken);
+        return { kind: 'pdf', name, blobUrl: URL.createObjectURL(await res.blob()) };
+      }
+
+      if (mimeType.startsWith('image/')) {
+        const res = await driveFetch(`${base}?alt=media&supportsAllDrives=true`, accessToken);
+        return { kind: 'image', name, blobUrl: URL.createObjectURL(await res.blob()) };
+      }
+
+      if (mimeType.startsWith('text/')) {
+        const res = await driveFetch(`${base}?alt=media&supportsAllDrives=true`, accessToken);
+        return { kind: 'text', name, text: await res.text() };
+      }
+
+      throw new Error(
+        `"${name}" is a ${mimeType} file, which this viewer can't display. ` +
+        'For Word documents, open the file in Drive with "Open with → Google Docs" to convert it, then view the converted copy.'
+      );
     }
 
     // ---- 4. Rendering ----------------------------------------------------
 
+    function setTitle(title) {
+      if (!title) return;
+      document.title = title;
+      document.getElementById('app-title').textContent = title;
+    }
+
     /**
-     * Inject the exported document HTML into the viewer container.
-     * The export is a full HTML page; we extract the <body> content and
-     * document title so we don't nest <html>/<head> tags in the DOM.
-     * @param {string} html
+     * Render the fetched content into the viewer container.
+     * @param {{kind: string, name: string, html?: string, blobUrl?: string, text?: string}} doc
      */
-    function renderDocument(html) {
-      const parsed = new DOMParser().parseFromString(html, 'text/html');
+    function renderDocument(doc) {
+      ui.doc.innerHTML = '';
 
-      const title = parsed.title?.trim();
-      if (title) {
-        document.title = title;
-        document.getElementById('app-title').textContent = title;
+      if (doc.kind === 'html') {
+        // The export is a full HTML page; extract the <body> content and
+        // title so we don't nest <html>/<head> tags in the DOM.
+        const parsed = new DOMParser().parseFromString(doc.html, 'text/html');
+        setTitle(parsed.title?.trim() || doc.name);
+        const styles = [...parsed.querySelectorAll('style')].map((s) => s.outerHTML).join('');
+        ui.doc.innerHTML = styles + parsed.body.innerHTML;
+      } else if (doc.kind === 'pdf') {
+        setTitle(doc.name);
+        const frame = document.createElement('iframe');
+        frame.src = doc.blobUrl;
+        frame.style.cssText = 'width:100%;height:80vh;border:none;';
+        frame.title = doc.name;
+        ui.doc.appendChild(frame);
+      } else if (doc.kind === 'image') {
+        setTitle(doc.name);
+        const img = document.createElement('img');
+        img.src = doc.blobUrl;
+        img.alt = doc.name;
+        ui.doc.appendChild(img);
+      } else if (doc.kind === 'text') {
+        setTitle(doc.name);
+        const pre = document.createElement('pre');
+        pre.style.cssText = 'white-space:pre-wrap;word-break:break-word;margin:0;font-size:14px;';
+        pre.textContent = doc.text;
+        ui.doc.appendChild(pre);
       }
-
-      // Preserve the export's inline <style> rules alongside the body content.
-      const styles = [...parsed.querySelectorAll('style')].map((s) => s.outerHTML).join('');
-      ui.doc.innerHTML = styles + parsed.body.innerHTML;
 
       setUIState('doc');
     }
@@ -374,8 +443,8 @@
       try {
         const { fileId } = parseDriveState();
         const accessToken = await authenticate();
-        const html = await fetchDocument(fileId, accessToken);
-        renderDocument(html);
+        const doc = await fetchDocument(fileId, accessToken);
+        renderDocument(doc);
       } catch (err) {
         console.error(err);
         showError(err.message || 'An unexpected error occurred.');

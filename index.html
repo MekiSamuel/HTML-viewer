@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Drive Doc Viewer</title>
+
+  <!-- Google Identity Services (GSI) -->
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+
+  <style>
+    :root {
+      --bg: #f1f3f4;
+      --surface: #ffffff;
+      --text: #202124;
+      --text-muted: #5f6368;
+      --accent: #1a73e8;
+      --error: #d93025;
+      --radius: 12px;
+      --shadow: 0 1px 3px rgba(60, 64, 67, 0.15), 0 4px 12px rgba(60, 64, 67, 0.1);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Google Sans', 'Segoe UI', Roboto, Arial, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    header {
+      width: 100%;
+      background: var(--surface);
+      box-shadow: 0 1px 2px rgba(60, 64, 67, 0.2);
+      padding: 14px 24px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+
+    header .logo {
+      width: 28px;
+      height: 28px;
+      border-radius: 6px;
+      background: linear-gradient(135deg, var(--accent), #6ea8fe);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: #fff;
+      font-weight: 700;
+      font-size: 14px;
+    }
+
+    header h1 {
+      font-size: 16px;
+      font-weight: 500;
+      margin: 0;
+    }
+
+    main {
+      width: 100%;
+      max-width: 880px;
+      padding: 32px 16px 64px;
+    }
+
+    /* ---- Status states (auth / loading / error) ---- */
+    .status-card {
+      background: var(--surface);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 48px 32px;
+      text-align: center;
+      display: none;
+    }
+
+    .status-card.visible { display: block; }
+
+    .status-card p {
+      color: var(--text-muted);
+      margin: 16px 0 0;
+      font-size: 15px;
+    }
+
+    .spinner {
+      width: 40px;
+      height: 40px;
+      margin: 0 auto;
+      border: 4px solid #e8eaed;
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .status-card.error .icon {
+      font-size: 40px;
+      line-height: 1;
+    }
+
+    .status-card.error p { color: var(--error); }
+
+    button.action {
+      margin-top: 24px;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 24px;
+      padding: 10px 28px;
+      font-size: 14px;
+      font-weight: 500;
+      font-family: inherit;
+      cursor: pointer;
+      transition: box-shadow 0.15s ease, background 0.15s ease;
+    }
+
+    button.action:hover {
+      background: #1765cc;
+      box-shadow: 0 1px 3px rgba(26, 115, 232, 0.4);
+    }
+
+    /* ---- Rendered document ---- */
+    #document-container {
+      display: none;
+      background: var(--surface);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 56px 64px;
+      line-height: 1.6;
+      overflow-wrap: break-word;
+    }
+
+    #document-container.visible { display: block; }
+
+    #document-container img { max-width: 100%; height: auto; }
+    #document-container table { max-width: 100%; border-collapse: collapse; }
+
+    @media (max-width: 640px) {
+      #document-container { padding: 32px 20px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <span class="logo">D</span>
+    <h1 id="app-title">Drive Doc Viewer</h1>
+  </header>
+
+  <main>
+    <!-- Authenticating -->
+    <div id="state-auth" class="status-card">
+      <div class="spinner"></div>
+      <p>Authenticating with Google…</p>
+      <button id="auth-button" class="action" style="display:none;">Authorize Access</button>
+    </div>
+
+    <!-- Fetching -->
+    <div id="state-loading" class="status-card">
+      <div class="spinner"></div>
+      <p>Fetching Document…</p>
+    </div>
+
+    <!-- Error -->
+    <div id="state-error" class="status-card error">
+      <div class="icon">⚠️</div>
+      <p id="error-message">Something went wrong.</p>
+      <button id="retry-button" class="action">Try Again</button>
+    </div>
+
+    <!-- Rendered document -->
+    <article id="document-container"></article>
+  </main>
+
+  <script>
+    'use strict';
+
+    // ======================================================================
+    // CONFIG — replace with your Google Cloud OAuth 2.0 Client ID
+    // ======================================================================
+    const CLIENT_ID = 'YOUR_CLIENT_ID.apps.googleusercontent.com';
+    const SCOPES = 'https://www.googleapis.com/auth/drive.readonly';
+
+    // ---- UI helpers ------------------------------------------------------
+
+    const ui = {
+      auth: document.getElementById('state-auth'),
+      loading: document.getElementById('state-loading'),
+      error: document.getElementById('state-error'),
+      errorMessage: document.getElementById('error-message'),
+      authButton: document.getElementById('auth-button'),
+      retryButton: document.getElementById('retry-button'),
+      doc: document.getElementById('document-container'),
+    };
+
+    /**
+     * Show exactly one UI state, hiding all others.
+     * @param {'auth'|'loading'|'error'|'doc'} state
+     */
+    function setUIState(state) {
+      for (const el of [ui.auth, ui.loading, ui.error, ui.doc]) {
+        el.classList.remove('visible');
+      }
+      ui[state].classList.add('visible');
+    }
+
+    function showError(message) {
+      ui.errorMessage.textContent = message;
+      setUIState('error');
+    }
+
+    // ---- 1. URL parsing --------------------------------------------------
+
+    /**
+     * Parse the `state` query parameter that Google Drive appends when
+     * launching the app via "Open with".
+     * Expected shape: { "ids": ["<fileId>"], "action": "open", "userId": "..." }
+     * @returns {{ fileId: string }}
+     * @throws {Error} if the parameter is missing or malformed
+     */
+    function parseDriveState() {
+      const params = new URLSearchParams(window.location.search);
+      const rawState = params.get('state');
+
+      if (!rawState) {
+        throw new Error(
+          'No "state" parameter found. This app must be launched from Google Drive via "Open with".'
+        );
+      }
+
+      let state;
+      try {
+        state = JSON.parse(rawState);
+      } catch {
+        throw new Error('The "state" parameter is not valid JSON.');
+      }
+
+      const { action, ids } = state;
+
+      if (action !== 'open') {
+        throw new Error(`Unsupported action "${action}". Expected "open".`);
+      }
+
+      if (!Array.isArray(ids) || ids.length === 0) {
+        throw new Error('No file IDs were provided by Google Drive.');
+      }
+
+      return { fileId: ids[0] };
+    }
+
+    // ---- 2. Authentication (Google Identity Services) --------------------
+
+    /**
+     * Wait for the GSI library to finish loading (it is loaded async/defer).
+     */
+    function waitForGsi(timeoutMs = 10000) {
+      return new Promise((resolve, reject) => {
+        const start = Date.now();
+        (function poll() {
+          if (window.google?.accounts?.oauth2) return resolve();
+          if (Date.now() - start > timeoutMs) {
+            return reject(new Error('Google Identity Services failed to load. Check your network connection.'));
+          }
+          setTimeout(poll, 100);
+        })();
+      });
+    }
+
+    /**
+     * Request an OAuth 2.0 access token with the drive.readonly scope.
+     * @returns {Promise<string>} the access token
+     */
+    async function authenticate() {
+      setUIState('auth');
+      await waitForGsi();
+
+      return new Promise((resolve, reject) => {
+        const tokenClient = google.accounts.oauth2.initTokenClient({
+          client_id: CLIENT_ID,
+          scope: SCOPES,
+          callback: (response) => {
+            if (response.error) {
+              reject(new Error(`Authorization failed: ${response.error_description || response.error}`));
+              return;
+            }
+            resolve(response.access_token);
+          },
+          error_callback: (err) => {
+            // Popup closed or blocked — show a manual button so the token
+            // request is triggered by a user gesture (avoids popup blockers).
+            ui.authButton.style.display = 'inline-block';
+            ui.authButton.onclick = () => {
+              ui.authButton.style.display = 'none';
+              tokenClient.requestAccessToken();
+            };
+            if (err?.type === 'popup_failed_to_open') {
+              // Keep waiting; user can click the button.
+              return;
+            }
+            reject(new Error(`Authorization was cancelled or failed (${err?.type || 'unknown error'}).`));
+          },
+        });
+
+        // Kick off the consent / token flow immediately.
+        tokenClient.requestAccessToken();
+      });
+    }
+
+    // ---- 3. Data fetching ------------------------------------------------
+
+    /**
+     * Export the Google Doc as HTML via the Drive v3 API.
+     * @param {string} fileId
+     * @param {string} accessToken
+     * @returns {Promise<string>} the document HTML
+     */
+    async function fetchDocument(fileId, accessToken) {
+      setUIState('loading');
+
+      const url = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}/export?mimeType=${encodeURIComponent('text/html')}`;
+
+      const response = await fetch(url, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+
+      if (!response.ok) {
+        const messages = {
+          401: 'Your session has expired. Please reload and re-authorize.',
+          403: 'You do not have permission to view this document, or the API quota was exceeded.',
+          404: 'Document not found. It may have been deleted or you may lack access.',
+        };
+        throw new Error(
+          messages[response.status] || `Drive API request failed (HTTP ${response.status}).`
+        );
+      }
+
+      return response.text();
+    }
+
+    // ---- 4. Rendering ----------------------------------------------------
+
+    /**
+     * Inject the exported document HTML into the viewer container.
+     * The export is a full HTML page; we extract the <body> content and
+     * document title so we don't nest <html>/<head> tags in the DOM.
+     * @param {string} html
+     */
+    function renderDocument(html) {
+      const parsed = new DOMParser().parseFromString(html, 'text/html');
+
+      const title = parsed.title?.trim();
+      if (title) {
+        document.title = title;
+        document.getElementById('app-title').textContent = title;
+      }
+
+      // Preserve the export's inline <style> rules alongside the body content.
+      const styles = [...parsed.querySelectorAll('style')].map((s) => s.outerHTML).join('');
+      ui.doc.innerHTML = styles + parsed.body.innerHTML;
+
+      setUIState('doc');
+    }
+
+    // ---- 5. Orchestration --------------------------------------------------
+
+    async function initApp() {
+      try {
+        const { fileId } = parseDriveState();
+        const accessToken = await authenticate();
+        const html = await fetchDocument(fileId, accessToken);
+        renderDocument(html);
+      } catch (err) {
+        console.error(err);
+        showError(err.message || 'An unexpected error occurred.');
+      }
+    }
+
+    ui.retryButton.addEventListener('click', initApp);
+    window.addEventListener('DOMContentLoaded', initApp);
+  </script>
+</body>
+</html>

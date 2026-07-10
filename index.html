@@ -173,8 +173,8 @@
 </head>
 <body>
   <header>
-    <span class="logo">HTML</span>
-    <h1 id="app-title">HTML Viewer</h1>
+    <span class="logo">D</span>
+    <h1 id="app-title">Drive Doc Viewer</h1>
   </header>
 
   <main>
@@ -214,21 +214,21 @@
     // ---- UI helpers ------------------------------------------------------
 
     const ui = {
-      auth: ument.getElementById('state-auth'),
-      loading: ument.getElementById('state-loading'),
-      error: ument.getElementById('state-error'),
-      errorMessage: ument.getElementById('error-message'),
-      authButton: ument.getElementById('auth-button'),
-      retryButton: ument.getElementById('retry-button'),
-      : ument.getElementById('ument-container'),
+      auth: document.getElementById('state-auth'),
+      loading: document.getElementById('state-loading'),
+      error: document.getElementById('state-error'),
+      errorMessage: document.getElementById('error-message'),
+      authButton: document.getElementById('auth-button'),
+      retryButton: document.getElementById('retry-button'),
+      doc: document.getElementById('document-container'),
     };
 
     /**
      * Show exactly one UI state, hiding all others.
-     * @param {'auth'|'loading'|'error'|''} state
+     * @param {'auth'|'loading'|'error'|'doc'} state
      */
     function setUIState(state) {
-      for (const el of [ui.auth, ui.loading, ui.error, ui.]) {
+      for (const el of [ui.auth, ui.loading, ui.error, ui.doc]) {
         el.classList.remove('visible');
       }
       ui[state].classList.add('visible');
@@ -346,8 +346,8 @@
       if (!response.ok) {
         const messages = {
           401: 'Your session has expired. Please reload and re-authorize.',
-          403: 'You do not have permission to view this ument, or the API quota was exceeded.',
-          404: 'ument not found. It may have been deleted or you may lack access.',
+          403: 'You do not have permission to view this document, or the API quota was exceeded.',
+          404: 'Document not found. It may have been deleted or you may lack access.',
         };
         throw new Error(
           messages[response.status] || `Drive API request failed (HTTP ${response.status}).`
@@ -359,11 +359,11 @@
 
     /**
      * Fetch file metadata, then the displayable content.
-     * Native Google s are exported as HTML; PDFs, images and plain text
+     * Native Google Docs are exported as HTML; PDFs, images and plain text
      * are downloaded directly. Anything else gets a clear error.
      * @returns {Promise<{kind: string, name: string, html?: string, blobUrl?: string, text?: string}>}
      */
-    async function fetchument(fileId, accessToken) {
+    async function fetchDocument(fileId, accessToken) {
       setUIState('loading');
 
       const base = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}`;
@@ -375,8 +375,8 @@
 
       const { name, mimeType } = meta;
 
-      // Native Google  → export as HTML
-      if (mimeType === 'application/vnd.google-apps.ument') {
+      // Native Google Doc → export as HTML
+      if (mimeType === 'application/vnd.google-apps.document') {
         const res = await driveFetch(`${base}/export?mimeType=${encodeURIComponent('text/html')}`, accessToken);
         return { kind: 'html', name, html: await res.text() };
       }
@@ -416,7 +416,7 @@
 
       throw new Error(
         `"${name}" is a ${mimeType} file, which this viewer can't display. ` +
-        'For Word uments, open the file in Drive with "Open with → Google s" to convert it, then view the converted copy.'
+        'For Word documents, open the file in Drive with "Open with → Google Docs" to convert it, then view the converted copy.'
       );
     }
 
@@ -424,19 +424,19 @@
 
     function setTitle(title) {
       if (!title) return;
-      ument.title = title;
-      ument.getElementById('app-title').textContent = title;
+      document.title = title;
+      document.getElementById('app-title').textContent = title;
     }
 
     /**
      * Render the fetched content into the viewer container.
-     * @param {{kind: string, name: string, html?: string, blobUrl?: string, text?: string}} 
+     * @param {{kind: string, name: string, html?: string, blobUrl?: string, text?: string}} doc
      */
-    function renderument() {
-      ui..innerHTML = '';
+    function renderDocument(doc) {
+      ui.doc.innerHTML = '';
 
       // HTML pages and PDFs get the full viewport; other kinds use the card.
-      const fullpage = .kind === 'page' || .kind === 'pdf';
+      const fullpage = doc.kind === 'page' || doc.kind === 'pdf';
       document.querySelector('main').classList.toggle('fullpage', fullpage);
 
       if (doc.kind === 'html') {
